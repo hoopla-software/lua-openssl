@@ -141,6 +141,8 @@ static LUA_FUNCTION(openssl_evp_decrypt)
     const char *iv = luaL_optlstring(L, 4, NULL, &iv_len); /* can be NULL */
     int pad = lua_isnoneornil(L, 5) ? 1 : lua_toboolean(L, 5);
     ENGINE *e = lua_isnoneornil(L, 6) ? NULL : CHECK_OBJECT(6, ENGINE, "openssl.engine");
+    size_t auth_tag_len = 0;
+    const char *auth_tag = luaL_optlstring(L, 7, NULL, &auth_tag_len); /* can be NULL */
     EVP_CIPHER_CTX *c = EVP_CIPHER_CTX_new();
 
     int output_len = 0;
@@ -167,21 +169,32 @@ static LUA_FUNCTION(openssl_evp_decrypt)
       ret = EVP_CIPHER_CTX_set_padding(c, pad);
       if (ret == 1)
       {
-        buffer = OPENSSL_malloc(input_len);
+        if (auth_tag_len > 0 && auth_tag)
+        {
+          /* set empty AAD if using auth_tag */
+          EVP_DecryptUpdate(c, NULL, &len, (const byte*)"", 0);
+          /* Set expected tag value. Works in OpenSSL 1.0.1d and later */
+          EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_SET_TAG, 16, auth_tag);
+        }
 
-        ret = EVP_DecryptUpdate(c, (byte*)buffer, &len, (const byte*)input, input_len);
         if (ret == 1)
         {
-          output_len += len;
-          len = input_len - len;
-          ret = EVP_DecryptFinal(c, (byte*)buffer + output_len, &len);
+          buffer = OPENSSL_malloc(input_len);
+
+          ret = EVP_DecryptUpdate(c, (byte*)buffer, &len, (const byte*)input, input_len);
           if (ret == 1)
           {
             output_len += len;
-            lua_pushlstring(L, buffer, output_len);
+            len = input_len - len;
+            ret = EVP_DecryptFinal(c, (byte*)buffer + output_len, &len);
+            if (ret == 1)
+            {
+              output_len += len;
+              lua_pushlstring(L, buffer, output_len);
+            }
           }
+          OPENSSL_free(buffer);
         }
-        OPENSSL_free(buffer);
       }
     }
     EVP_CIPHER_CTX_cleanup(c);
